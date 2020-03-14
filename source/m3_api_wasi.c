@@ -28,7 +28,16 @@ typedef uint32_t __wasi_size_t;
 #if defined(__wasi__) || defined(__APPLE__) || defined(__ANDROID_API__) || defined(__OpenBSD__) || defined(__linux__)
 #  include <unistd.h>
 #  include <sys/uio.h>
-#  include <sys/random.h>
+#  if defined(__APPLE__)
+#      include <TargetConditionals.h>
+#      if TARGET_OS_MAC
+#          include <sys/random.h>
+#      else // iOS / Simulator
+#          include <Security/Security.h>
+#      endif
+#  else
+#      include <sys/random.h>
+#  endif
 #  define HAS_IOVEC
 #elif defined(_WIN32)
 #  include <Windows.h>
@@ -51,7 +60,7 @@ typedef struct wasi_iovec_t
     __wasi_size_t buf_len;
 } wasi_iovec_t;
 
-#define PREOPEN_CNT   5
+#define PREOPEN_CNT   4
 
 typedef struct Preopen {
     int         fd;
@@ -63,7 +72,6 @@ Preopen preopen[PREOPEN_CNT] = {
     {  1, "<stdout>" },
     {  2, "<stderr>" },
     { -1, "./"       },
-    { -1, "../"      },
 };
 
 static
@@ -241,7 +249,7 @@ m3ApiRawFunction(m3_wasi_unstable_fd_prestat_dir_name)
 
     if (runtime == NULL) { m3ApiReturn(__WASI_EINVAL); }
     if (fd < 3 || fd >= PREOPEN_CNT) { m3ApiReturn(__WASI_EBADF); }
-    int size = min(strlen(preopen[fd].path), path_len);
+    int size = m3_min (strlen(preopen[fd].path), path_len);
     memcpy(path, preopen[fd].path, size);
     m3ApiReturn(__WASI_ESUCCESS);
 }
@@ -534,12 +542,12 @@ m3ApiRawFunction(m3_wasi_unstable_random_get)
         ssize_t retlen = 0;
 
 #if defined(__wasi__) || defined(__APPLE__) || defined(__ANDROID_API__) || defined(__OpenBSD__)
-        size_t reqlen = min(buflen, 256);
-        if (getentropy(buf, reqlen) < 0) {
-            retlen = -1;
-        } else {
-            retlen = reqlen;
-        }
+        size_t reqlen = m3_min (buflen, 256);
+#   if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR)
+        retlen = SecRandomCopyBytes(kSecRandomDefault, reqlen, buf) < 0 ? -1 : reqlen;
+#   else
+        retlen = getentropy(buf, reqlen) < 0 ? -1 : reqlen;
+#   endif
 #elif defined(__FreeBSD__) || defined(__linux__)
         retlen = getrandom(buf, buflen, 0);
 #elif defined(_WIN32)
@@ -606,13 +614,9 @@ m3ApiRawFunction(m3_wasi_unstable_clock_time_get)
 
 m3ApiRawFunction(m3_wasi_unstable_proc_exit)
 {
-    m3ApiReturnType  (uint32_t)
     m3ApiGetArg      (uint32_t, code)
 
-    // TODO: in repl mode, trap and bail out
-    if (code) {
-        fprintf(stderr, M3_ARCH "-wasi: exit(%d)\n", code);
-    }
+    runtime->exit_code = code;
 
     m3ApiTrap(m3Err_trapExit);
 }
@@ -653,13 +657,13 @@ _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "environ_get",    
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_prestat_dir_name",  "i(i*i)",  &m3_wasi_unstable_fd_prestat_dir_name)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_prestat_get",       "i(i*)",   &m3_wasi_unstable_fd_prestat_get)));
 
-_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "path_open",            "i(ii*iiiii*)",  &m3_wasi_unstable_path_open)));
+_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "path_open",      "i(ii*iiIIi*)",  &m3_wasi_unstable_path_open)));
 
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_fdstat_get",        "i(i*)",   &m3_wasi_unstable_fd_fdstat_get)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_fdstat_set_flags",  "i(ii)",   &m3_wasi_unstable_fd_fdstat_set_flags)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_write",             "i(iii*)", &m3_wasi_unstable_fd_write)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_read",              "i(iii*)", &m3_wasi_unstable_fd_read)));
-_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_seek",              "i(iii*)", &m3_wasi_unstable_fd_seek)));
+_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_seek",              "i(iIi*)", &m3_wasi_unstable_fd_seek)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_datasync",          "i(i)",    &m3_wasi_unstable_fd_datasync)));
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_close",             "i(i)",    &m3_wasi_unstable_fd_close)));
 
@@ -669,8 +673,8 @@ _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "fd_close",       
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "random_get",           "i(*i)",   &m3_wasi_unstable_random_get)));
 
 _   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "clock_res_get",        "i(i*)",   &m3_wasi_unstable_clock_res_get)));
-_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "clock_time_get",       "i(ii*)",  &m3_wasi_unstable_clock_time_get)));
-_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "proc_exit",            "i(i)",    &m3_wasi_unstable_proc_exit)));
+_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "clock_time_get",       "i(iI*)",  &m3_wasi_unstable_clock_time_get)));
+_   (SuppressLookupFailure (m3_LinkRawFunction (module, wasi, "proc_exit",            "v(i)",    &m3_wasi_unstable_proc_exit)));
 
 _catch:
     return result;

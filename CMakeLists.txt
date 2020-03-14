@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.9)
 
+option(BUILD_WASI_SUPPORT "Build with WASI support" ON)
+
 set(OUT_FILE "wasm3")
 set(APP_DIR  "platforms/app")
 
@@ -36,9 +38,9 @@ if(EMSCRIPTEN)
   set(APP_DIR            "platforms/emscripten")
 endif()
 
-if(WASIENV)
-  set(CMAKE_C_COMPILER   "wasicc")
-  set(CMAKE_CXX_COMPILER "wasic++")
+# Detect WasiEnv
+if(DEFINED ENV{WASI_CC})
+  set(WASIENV            1)
 endif()
 
 if(BUILD_32BIT)
@@ -67,11 +69,9 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
-file(GLOB M3_SRC "source/*.c" "source/*.cpp" "${APP_DIR}/*.c")
 
-add_executable(${OUT_FILE} ${M3_SRC})
-
-include_directories("./source/")
+file(GLOB app_srcs "${APP_DIR}/*.c")
+add_executable(${OUT_FILE} ${app_srcs})
 
 #-fno-optimize-sibling-calls
 
@@ -84,7 +84,10 @@ if(EMSCRIPTEN)
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Xclang -target-feature -Xclang +tail-call")
   endif()
 elseif(WASIENV)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasMetaWASI")
+
+  if(BUILD_WASI_SUPPORT)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasMetaWASI -Dd_m3HasTracer")
+  endif()
 
   set(CMAKE_C_FLAGS_RELEASE "-O3 -Wfatal-errors -fomit-frame-pointer -fno-stack-check -fno-stack-protector")
 
@@ -94,13 +97,21 @@ elseif(WASIENV)
   #-flto -Wl,--lto-O3
   set(CMAKE_EXE_LINKER_FLAGS      "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
 elseif(WIN32)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasWASI")
+
+  if(BUILD_WASI_SUPPORT)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasWASI")
+  endif()
 
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_CRT_SECURE_NO_WARNINGS /WX- /diagnostics:column")
 
   string(REGEX REPLACE "/W[0-4]" "/W0" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 
   if (CMAKE_C_COMPILER_ID MATCHES "MSVC")
+
+    if("${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /d2noftol3")
+    endif()
+
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Oxs /Oy /GS- /Zi /Zo /arch:AVX2")
 
     # Uncomment this if you want to disassemble the release build,
@@ -114,7 +125,10 @@ elseif(WIN32)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /STACK:8388608") # stack size
 
 else()
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasWASI")
+
+  if(BUILD_WASI_SUPPORT)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Dd_m3HasWASI -Dd_m3HasTracer") #-Dd_m3FixedHeap=1048576
+  endif()
 
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wparentheses -Wundef -Wpointer-arith -Wstrict-aliasing=2")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=shadow -Werror=implicit-function-declaration") # -Werror=cast-align
@@ -140,6 +154,9 @@ if(result AND NOT WASIENV) # TODO: LTO breaks wasm imports
 else()
   message("LTO:        OFF")
 endif()
+
+add_subdirectory(source)
+target_link_libraries(${OUT_FILE} m3)
 
 message("Flags:         ${CMAKE_C_FLAGS}")
 message("Debug flags:   ${CMAKE_C_FLAGS_DEBUG}")

@@ -5,7 +5,7 @@ on: [push, pull_request]
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -25,7 +25,9 @@ jobs:
     - uses: actions/checkout@v1
     - name: Install multilib
       if: contains(matrix.flags, '-m32')
-      run: sudo apt-get install gcc-multilib
+      run: |
+        sudo apt update
+        sudo apt install gcc-multilib
     - name: Run CMake
       env:
         CC: ${{ matrix.compiler }}
@@ -48,7 +50,7 @@ jobs:
 
   build-mac:
     runs-on: macos-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@v1
@@ -71,7 +73,7 @@ jobs:
 
   build-win:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -101,22 +103,25 @@ jobs:
 
   build-wasi:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@v1
     - name: Install Wasienv
       run: curl https://raw.githubusercontent.com/wasienv/wasienv/master/install.sh | sh
     - name: Install Wasmer
+      env:
+        WASMER_RELEASE_TAG: "0.15.0" 
       run: curl https://get.wasmer.io -sSfL | sh
     - name: Run CMake
       run: |
         source $HOME/.wasienv/wasienv.sh
         mkdir build-wasi
         cd build-wasi
-        cmake -DWASIENV=1 ..
+        wasimake cmake ..
     - name: Build
       run: |
+        source $HOME/.wasienv/wasienv.sh
         cmake --build build-wasi
     - name: Run spec tests (in Wasmer)
       run: |
@@ -141,7 +146,7 @@ jobs:
 
   build-ios:
     runs-on: macos-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@v1
@@ -156,7 +161,7 @@ jobs:
 
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v1
     - uses: seanmiddleditch/gha-setup-ninja@master
@@ -172,7 +177,7 @@ jobs:
   build-raspberry:
     runs-on: [self-hosted, linux, ARM]
     if: "false"    # TODO: implement QEMU-based RPi build/test environment
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -214,10 +219,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -U platformio
-    - name: Build Arduino MKR1000
-      run: |
-        cd platforms/arduino
-        pio run -e mkr1000
     - name: Build AVR ATmega1284
       run: |
         cd platforms/arduino
@@ -231,10 +232,25 @@ jobs:
       run: |
         cd platforms/esp32-pio
         pio run
-    - name: Build HiFive1
+
+  build-platformio-arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: Set up Python
+      uses: actions/setup-python@v1
+      with:
+        python-version: '3.x'
+    - name: Install PlatformIO
       run: |
-        cd platforms/hifive1
-        pio run
+        python -m pip install --upgrade pip
+        pip install -U platformio
+    - name: Build Arduino MKR1000
+      run: |
+        cd platforms/arduino
+        pio run -e mkr1000
     - name: Build Blue Pill (JeeH)
       run: |
         cd platforms/bluepill
@@ -247,14 +263,34 @@ jobs:
       run: |
         cd platforms/arduino
         pio run -e az3166
+
+  build-platformio-riscv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: Set up Python
+      uses: actions/setup-python@v1
+      with:
+        python-version: '3.x'
+    - name: Install PlatformIO
+      run: |
+        python -m pip install --upgrade pip
+        pip install -U platformio
+    - name: Build HiFive1
+      run: |
+        cd platforms/hifive1
+        pio run
     - name: Build Sipeed MAIX
       run: |
         cd platforms/arduino
         pio run -e maix
-        
+
   build-particle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: "github.event_name == 'push'"
 
     steps:
     - uses: actions/checkout@v1
@@ -272,7 +308,7 @@ jobs:
   build-esp32-idf:
     runs-on: ubuntu-latest
     container: igrr/idf-qemu:release-v4.0-esp-develop-20191228
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@v1
@@ -296,3 +332,23 @@ jobs:
       run: |
         diff -q platforms/esp32-idf/main/main.cpp platforms/esp32-pio/src/main.cpp
       # TODO: also check that the build flags are in sync
+
+  build-cpp:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+      - name: Run CMake
+        run: |
+          cd platforms/cpp
+          mkdir build
+          cd build
+          cmake ..
+      - name: Build
+        run: |
+          cd platforms/cpp
+          cmake --build build
+      - name: Run
+        run: |
+          cd platforms/cpp/build
+          ./wasm3_cpp_example

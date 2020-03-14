@@ -25,7 +25,7 @@ M3Result  EnsureCodePageNumLines  (IM3Compilation o, u32 i_numLines)
             m3log (emit, "bridging new code page from: %d %p (free slots: %d) to: %d", o->page->info.sequence, GetPC (o), NumFreeLines (o->page), page->info.sequence);
             d_m3Assert (NumFreeLines (o->page) >= 2);
 
-            EmitWord (o->page, op_Bridge);
+            EmitWord (o->page, op_Branch);
             EmitWord (o->page, GetPagePC (page));
 
             ReleaseCodePage (o->runtime, o->page);
@@ -84,7 +84,7 @@ void  EmitConstant64  (IM3Compilation o, const u64 i_const)
 }
 
 
-void  EmitOffset  (IM3Compilation o, const i32 i_offset)
+void  EmitSlotOffset  (IM3Compilation o, const i32 i_offset)
 {
     if (o->page)
         EmitWord (o->page, i_offset);

@@ -89,23 +89,14 @@ def binaryToFloat(num, t):
     else:
         fatal(f"Unknown type '{t}'")
 
-def escape(s):
-    c = ord(s)
-
-    if c < 128 and s.isprintable() and not s in " \n\r\t\\":
-        return s
-
-    if c <= 0xff:
-        return r'\x{0:02x}'.format(c)
-    elif c <= 0xffff:
-        return r'\u{0:04x}'.format(c)
-    else:
-        return r'\U{0:08x}'.format(c)
-
 def escape_str(s):
     if s == "":
         return r'\x00'
-    return ''.join(escape(c) for c in s)
+
+    if all((ord(c) < 128 and c.isprintable() and not c in " \n\r\t\\") for c in s):
+        return s
+
+    return '\\x' + '\\x'.join('{0:02x}'.format(x) for x in s.encode('utf-8'))
 
 #
 # Value format options
@@ -155,13 +146,13 @@ if not (os.path.isdir("./core") and os.path.isdir("./proposals")):
     from zipfile import ZipFile
     from urllib.request import urlopen
 
-    officialSpec = "https://github.com/wasm3/wasm-core-testsuite/archive/master.zip"
+    officialSpec = "https://github.com/wasm3/wasm-core-testsuite/archive/v1.1.zip"
 
     print(f"Downloading {officialSpec}")
     resp = urlopen(officialSpec)
     with ZipFile(BytesIO(resp.read())) as zipFile:
         for zipInfo in zipFile.infolist():
-            if re.match(r".*-master/.*/.*(\.wasm|\.json)", zipInfo.filename):
+            if re.match(r".*-.*/.*/.*(\.wasm|\.json)", zipInfo.filename):
                 parts = pathlib.Path(zipInfo.filename).parts
                 newpath = str(pathlib.Path(*parts[1:-1]))
                 newfn   = str(pathlib.Path(*parts[-1:]))
@@ -304,13 +295,23 @@ class Wasm3():
 
 wasm3 = Wasm3(args.exec)
 
-print(wasm3.version())
+wasm3_ver = wasm3.version()
+print(wasm3_ver)
 
 blacklist = Blacklist([
   "float_exprs.wast:* f32.nonarithmetic_nan_bitpattern*",
   "imports.wast:*",
-  "names.wast:630 *", # name that starts with '\0'
+  "names.wast:* *.wasm \\x00*", # names that start with '\0'
 ])
+
+if wasm3_ver in Blacklist(["* MSVC *, x86)", "* Clang * for Windows, x86)"]):
+    warning("Win32 x86 has i64->f32 conversion precision issues, skipping some tests")
+    # See: https://docs.microsoft.com/en-us/cpp/c-runtime-library/floating-point-support
+    blacklist.add([
+      "conversions.wast:* f32.convert_i64_u(9007199791611905)",
+      "conversions.wast:* f32.convert_i64_u(9223371761976868863)",
+      "conversions.wast:* f32.convert_i64_u(9223372586610589697)",
+    ])
 
 stats = dotdict(total_run=0, skipped=0, failed=0, crashed=0, timeout=0,  success=0, missing=0)
 
@@ -389,12 +390,12 @@ def runInvoke(test):
             expect = "result " + value
 
             if actual_val != None:
-                if (t == "f32" or t == "f64") and (value == "<Canonical NaN>" or value == "<Arithmetic NaN>"):
+                if (t == "f32" or t == "f64") and (value == "nan:canonical" or value == "nan:arithmetic"):
                     val = binaryToFloat(actual_val, t)
                     #warning(f"{actual_val} => {val}")
                     if math.isnan(val):
-                        actual = "<Some NaN>"
-                        expect = "<Some NaN>"
+                        actual = "nan:any"
+                        expect = "nan:any"
                 else:
                     expect = "result " + formatValue(value, t)
                     actual = "result " + formatValue(actual_val, t)
@@ -439,13 +440,15 @@ def runInvoke(test):
 if args.file:
     jsonFiles = args.file
 else:
-    jsonFiles = glob.glob(os.path.join(".", "core", "*.json"))
+    jsonFiles  = glob.glob(os.path.join(".", "core", "*.json"))
+    jsonFiles += glob.glob(os.path.join(".", "proposals", "sign-extension-ops", "*.json"))
+    jsonFiles += glob.glob(os.path.join(".", "proposals", "nontrapping-float-to-int-conversions", "*.json"))
 
 jsonFiles = list(map(lambda x: os.path.relpath(x, scriptDir), jsonFiles))
 jsonFiles.sort()
 
 for fn in jsonFiles:
-    with open(fn) as f:
+    with open(fn, encoding='utf-8') as f:
         data = json.load(f)
 
     wast_source = filename(data["source_filename"])
@@ -490,10 +493,10 @@ for fn in jsonFiles:
                 test.expected = cmd["expected"]
             elif test.type == "assert_return_canonical_nan":
                 test.expected = cmd["expected"]
-                test.expected[0]["value"] = "<Canonical NaN>"
+                test.expected[0]["value"] = "nan:canonical"
             elif test.type == "assert_return_arithmetic_nan":
                 test.expected = cmd["expected"]
-                test.expected[0]["value"] = "<Arithmetic NaN>"
+                test.expected[0]["value"] = "nan:arithmetic"
             elif test.type == "assert_trap":
                 test.expected_trap = cmd["text"]
             elif test.type == "assert_exhaustion":

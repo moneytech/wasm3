@@ -50,12 +50,12 @@ commands = [
     "name":           "mandelbrot",
     "wasm":           "./benchmark/mandelbrot/mandel.wasm",
     "args":           ["128", "4e5"],
-    "expect_sha1":    "2df4c54065e58d3a860fe3b8cc6ad4ffabf6cdaf"
+    "expect_sha1":    "37091e7ce96adeea88f079ad95d239a651308a56"
   }, {
     "name":           "mandelbrot (doubledouble)",
     "wasm":           "./benchmark/mandelbrot/mandel_dd.wasm",
     "args":           ["128", "4e5"],
-    "expect_sha1":    "dab4899961e2fcfc8691754c2200d64c5c0995e1"
+    "expect_sha1":    "b3f904daf1c972b4f7d3f8996743cb5b5146b877"
   }, {
     "name":           "C-Ray",
     "stdin":          "./benchmark/c-ray/scene",
@@ -63,7 +63,6 @@ commands = [
     "args":           ["-s", "128x128"],
     "expect_sha1":    "90f86845ae227466a06ea8db06e753af4838f2fa"
   }, {
-    "skip":           True,  # TODO: Crashes
     "name":           "smallpt (explicit light sampling)",
     "wasm":           "./benchmark/smallpt/smallpt-ex.wasm",
     "args":           ["16", "64"],
@@ -81,8 +80,8 @@ commands = [
     "name":           "Brotli",
     "stdin":          "./benchmark/brotli/alice29.txt",
     "wasm":           "./benchmark/brotli/brotli.wasm",
-    "args":           ["-9", "-c"],
-    "expect_sha1":    "e5f2e4cb0eb0bae1775a7be0795dd2aaf8900f1a"
+    "args":           ["-c"],
+    "expect_sha1":    "8eacda4b80fc816cad185330caa7556e19643dff"
   }, {
     "name":           "CoreMark",
     "wasm":           "./benchmark/coremark/coremark-wasi.wasm",

@@ -29,6 +29,41 @@ void  ReportError2  (IM3Function i_function, m3ret_t i_result)
     i_function->module->runtime->runtimeError = (M3Result)i_result;
 }
 
+d_m3OpDef  (GetGlobal_s32)
+{
+    u32 * global = immediate (u32 *);
+    slot (u32) = * global;                  //  printf ("get global: %p %" PRIi64 "\n", global, *global);
+
+    nextOp ();
+}
+
+
+d_m3OpDef  (GetGlobal_s64)
+{
+    u64 * global = immediate (u64 *);
+    slot (u64) = * global;                        // printf ("get global: %p %" PRIi64 "\n", global, *global);
+
+    nextOp ();
+}
+
+
+d_m3OpDef  (SetGlobal_i32)
+{
+    u32 * global = immediate (u32 *);
+    * global = (u32) _r0;                         //  printf ("set global: %p %" PRIi64 "\n", global, _r0);
+
+    nextOp ();
+}
+
+
+d_m3OpDef  (SetGlobal_i64)
+{
+    u64 * global = immediate (u64 *);
+    * global = (u64) _r0;                         //  printf ("set global: %p %" PRIi64 "\n", global, _r0);
+
+    nextOp ();
+}
+
 
 d_m3OpDef  (Call)
 {
@@ -43,7 +78,7 @@ d_m3OpDef  (Call)
     if (r == 0)
     {
         _mem = memory->mallocated;
-        return nextOp ();
+        nextOp ();
     }
     else return r;
 }
@@ -51,6 +86,7 @@ d_m3OpDef  (Call)
 
 d_m3OpDef  (CallIndirect)
 {
+    u32 tableIndex              = slot (u32);
     IM3Module module            = immediate (IM3Module);
     IM3FuncType type            = immediate (IM3FuncType);
     i32 stackOffset             = immediate (i32);
@@ -58,56 +94,37 @@ d_m3OpDef  (CallIndirect)
 
     m3stack_t sp = _sp + stackOffset;
 
-    i32 tableIndex = * (i32 *) (sp + type->numArgs);
+    m3ret_t r = m3Err_none;
 
-    if (tableIndex >= 0 and (u32)tableIndex < module->table0Size)
+    if (tableIndex < module->table0Size)
     {
-        m3ret_t r = m3Err_none;
-
         IM3Function function = module->table0 [tableIndex];
 
         if (function)
         {
-            // TODO: this can eventually be simplified. by using a shared set of unique M3FuncType objects in
-            // M3Environment, the compare can be reduced to a single pointer-compare operation
-
-            if (type->numArgs != function->funcType->numArgs)
+            if (type == function->funcType)
             {
-                return m3Err_trapIndirectCallTypeMismatch;
-            }
-
-            if (type->returnType != function->funcType->returnType)
-            {
-                return m3Err_trapIndirectCallTypeMismatch;
-            }
-
-            for (u32 argIndex = 0; argIndex < type->numArgs; ++argIndex)
-            {
-                if (type->argTypes[argIndex] != function->funcType->argTypes[argIndex])
-                {
-                    return m3Err_trapIndirectCallTypeMismatch;
-                }
-            }
-
-            if (not function->compiled)
-                r = Compile_Function (function);
-
-            if (not r)
-            {
-                r = Call (function->compiled, sp, _mem, d_m3OpDefaultArgs);
+                if (UNLIKELY(not function->compiled))
+                    r = Compile_Function (function);
 
                 if (not r)
                 {
-                    _mem = memory->mallocated;
-                    r = nextOp ();
+                    r = Call (function->compiled, sp, _mem, d_m3OpDefaultArgs);
+
+                    if (not r)
+                    {
+                        _mem = memory->mallocated;
+                        r = nextOpDirect ();
+                    }
                 }
             }
+            else r = m3Err_trapIndirectCallTypeMismatch;
         }
-        else r = "trap: table element is null";
-
-        return r;
+        else r = m3Err_trapTableElementIsNull;
     }
-    else return m3Err_trapTableIndexOutOfRange;
+    else r = m3Err_trapTableIndexOutOfRange;
+
+    return r;
 }
 
 
@@ -116,20 +133,28 @@ d_m3OpDef  (CallRawFunction)
     M3RawCall call = (M3RawCall) (* _pc++);
     IM3Runtime runtime = GetRuntime (_mem);
 
-    m3ret_t possible_trap = call (runtime, _sp, m3MemData(_mem));
+    m3ret_t possible_trap = call (runtime, (u64 *) _sp, m3MemData(_mem));
+    return possible_trap;
+}
+
+d_m3OpDef  (CallRawFunctionEx)
+{
+    M3RawCallEx call = (M3RawCallEx) (* _pc++);
+    void * cookie = immediate (void *);
+    IM3Runtime runtime = GetRuntime (_mem);
+
+    m3ret_t possible_trap = call (runtime, (u64 *)_sp, m3MemData(_mem), cookie);
     return possible_trap;
 }
 
 
 d_m3OpDef  (MemCurrent)
 {
-    // TODO: get memory from _mem, so that compiled code isn't tied to a specific runtime
-
     IM3Memory memory            = GetMemoryInfo (_mem);
 
     _r0 = memory->numPages;
 
-    return nextOp ();
+    nextOp ();
 }
 
 
@@ -152,7 +177,7 @@ d_m3OpDef  (MemGrow)
         _mem = memory->mallocated;
     }
 
-    return nextOp ();
+    nextOp ();
 }
 
 
@@ -169,7 +194,7 @@ d_m3OpDef  (Compile)
 
     m3ret_t result = m3Err_none;
 
-    if (not function->compiled) // check to see if function was compiled since this operation was emitted.
+    if (UNLIKELY(not function->compiled)) // check to see if function was compiled since this operation was emitted.
         result = Compile_Function (function);
 
     if (not result)
@@ -177,7 +202,7 @@ d_m3OpDef  (Compile)
         // patch up compiled pc and call rewriten op_Call
         *((size_t *) --_pc) = (size_t) (function->compiled);
         --_pc;
-        result = nextOp ();
+        result = nextOpDirect ();
     }
     else ReportError2 (function, result);
 
@@ -188,27 +213,29 @@ d_m3OpDef  (Compile)
 
 d_m3OpDef  (Entry)
 {
+    d_m3ClearRegisters
+
     IM3Function function = immediate (IM3Function);
 
-#if defined(d_m3SkipStackCheck)
+#if defined (d_m3SkipStackCheck)
     if (true)
 #else
-    if ((void*)(_sp + function->maxStackSlots) < _mem->maxStack)
+    if ((void *) ((m3slot_t *) _sp + function->maxStackSlots) < _mem->maxStack)
 #endif
     {
         function->hits++;                                       m3log (exec, " enter %p > %s %s", _pc - 2, function->name ? function->name : ".unnamed", SPrintFunctionArgList (function, _sp));
 
-        u32 numLocals = function->numLocals;
+        u8 * stack = (u8 *) ((m3slot_t *) _sp + function->numArgSlots);
 
-        m3stack_t stack = _sp + GetFunctionNumArgs (function);
-        while (numLocals--)                                     // it seems locals need to init to zero (at least for optimized Wasm code) TODO: see if this is still true.
-            * (stack++) = 0;
+        memset (stack, 0x0, function->numLocalBytes);
+        stack += function->numLocalBytes;
 
-        if (function->constants) {
-            memcpy (stack, function->constants, function->numConstants * sizeof (u64));
+        if (function->constants)
+        {
+            memcpy (stack, function->constants, function->numConstantBytes);
         }
 
-        m3ret_t r = nextOp ();
+        m3ret_t r = nextOpDirect ();
 
 #       if d_m3LogExec
             u8 returnType = function->funcType->returnType;
@@ -230,36 +257,21 @@ d_m3OpDef  (Entry)
 }
 
 
-d_m3OpDef  (GetGlobal)
-{
-    i64 * global = immediate (i64 *);
-    slot (i64) = * global;                  //  printf ("get global: %p %" PRIi64 "\n", global, *global);
-
-    return nextOp ();
-}
-
-
-d_m3OpDef  (SetGlobal_i)
-{
-    i64 * global = immediate (i64 *);
-    * global = _r0;                         //  printf ("set global: %p %" PRIi64 "\n", global, _r0);
-
-    return nextOp ();
-}
-
-
-
 d_m3OpDef  (Loop)
 {
+    // regs are unused coming into a loop anyway
+    // this reduces code size & stack usage
+    d_m3ClearRegisters
+
     m3ret_t r;
 
     IM3Memory memory = GetMemoryInfo (_mem);
 
     do
     {
-        // linear memory pointer needs refreshed here because the block it's loop over
-        // can potentially invoke the grow operator.
-        r = nextOp ();                     // printf ("loop: %p\n", r);
+        r = nextOpDirect ();                     // printf ("loop: %p\n", r);
+        // linear memory pointer needs refreshed here because the block it's looping over
+        // can potentially invoke the grow operation.
         _mem = memory->mallocated;
     }
     while (r == _pc);
@@ -268,16 +280,20 @@ d_m3OpDef  (Loop)
 }
 
 
+d_m3OpDef  (Branch)
+{
+    return jumpOp (* _pc);
+}
+
+
 d_m3OpDef  (If_r)
 {
     i32 condition = (i32) _r0;
 
-    skip_immediate (pc_t);                      // empty preservation chain
-
     pc_t elsePC = immediate (pc_t);
 
     if (condition)
-        return nextOp ();
+        nextOp ();
     else
         return jumpOp (elsePC);
 }
@@ -287,28 +303,10 @@ d_m3OpDef  (If_s)
 {
     i32 condition = slot (i32);
 
-    skip_immediate (pc_t);                      // empty preservation chain
-
     pc_t elsePC = immediate (pc_t);
 
     if (condition)
-        return nextOp ();
-    else
-        return jumpOp (elsePC);
-}
-
-
-d_m3OpDef  (IfPreserve)
-{
-    i32 condition = (i32) _r0;
-
-    pc_t p = immediate (pc_t);
-    jumpOp (p);
-
-    pc_t elsePC = immediate (pc_t);         //printf ("else: %p\n", elsePC);
-
-    if (condition)
-        return nextOp ();
+        nextOp ();
     else
         return jumpOp (elsePC);
 }
@@ -328,6 +326,35 @@ d_m3OpDef  (BranchTable)
 }
 
 
+#define d_m3SetRegisterSetSlot(TYPE, REG) \
+d_m3OpDef  (SetRegister_##TYPE)         \
+{                                       \
+    REG = slot (TYPE);                  \
+    nextOp ();                          \
+}                                       \
+                                        \
+d_m3OpDef (SetSlot_##TYPE)              \
+{                                       \
+    slot (TYPE) = (TYPE) REG;           \
+    nextOp ();                          \
+}                                       \
+                                        \
+d_m3OpDef (PreserveSetSlot_##TYPE)      \
+{                                       \
+    TYPE * stack     = slot_ptr (TYPE); \
+    TYPE * preserve  = slot_ptr (TYPE); \
+                                        \
+    * preserve = * stack;               \
+    * stack = (TYPE) REG;               \
+                                        \
+    nextOp ();                          \
+}
+
+d_m3SetRegisterSetSlot (i32, _r0)
+d_m3SetRegisterSetSlot (i64, _r0)
+d_m3SetRegisterSetSlot (f32, _fp0)
+d_m3SetRegisterSetSlot (f64, _fp0)
+
 
 d_m3OpDef (CopySlot_32)
 {
@@ -336,7 +363,20 @@ d_m3OpDef (CopySlot_32)
 
     * dst = * src;
 
-    return nextOp ();
+    nextOp ();
+}
+
+
+d_m3OpDef (PreserveCopySlot_32)
+{
+    u32 * dest      = slot_ptr (u32);
+    u32 * src       = slot_ptr (u32);
+    u32 * preserve  = slot_ptr (u32);
+
+    * preserve = * dest;
+    * dest = * src;
+
+    nextOp ();
 }
 
 
@@ -347,9 +387,21 @@ d_m3OpDef (CopySlot_64)
 
     * dst = * src;                  // printf ("copy: %p <- %" PRIi64 " <- %p\n", dst, * dst, src);
 
-    return nextOp ();
+    nextOp ();
 }
 
+
+d_m3OpDef (PreserveCopySlot_64)
+{
+    u64 * dest      = slot_ptr (u64);
+    u64 * src       = slot_ptr (u64);
+    u64 * preserve  = slot_ptr (u64);
+
+    * preserve = * dest;
+    * dest = * src;
+
+    nextOp ();
+}
 
 
 #if d_m3RuntimeStackDumps
@@ -387,7 +439,7 @@ d_m3OpDef  (DumpStack)
 
 # if d_m3EnableOpProfiling
 //--------------------------------------------------------------------------------------------------------
-M3ProfilerSlot s_opProfilerCounts [c_m3ProfilerSlotMask] = {};
+M3ProfilerSlot s_opProfilerCounts [c_m3ProfilerSlotMask + 1] = {};
 
 void  ProfileHit  (cstr_t i_operationName)
 {
@@ -407,15 +459,34 @@ void  ProfileHit  (cstr_t i_operationName)
     slot->hitCount++;
 }
 
+
 void  m3_PrintProfilerInfo  ()
 {
-    for (u32 i = 0; i <= c_m3ProfilerSlotMask; ++i)
-    {
-        M3ProfilerSlot * slot = & s_opProfilerCounts [i];
+    M3ProfilerSlot dummy;
+    M3ProfilerSlot * maxSlot = & dummy;
 
-        if (slot->opName)
-            printf ("%13llu  %s\n", slot->hitCount, slot->opName);
+    do
+    {
+        maxSlot->hitCount = 0;
+
+        for (u32 i = 0; i <= c_m3ProfilerSlotMask; ++i)
+        {
+            M3ProfilerSlot * slot = & s_opProfilerCounts [i];
+
+            if (slot->opName)
+            {
+                if (slot->hitCount > maxSlot->hitCount)
+                    maxSlot = slot;
+            }
+        }
+
+        if (maxSlot->opName)
+        {
+            fprintf (stderr, "%13llu  %s\n", maxSlot->hitCount, maxSlot->opName);
+            maxSlot->opName = NULL;
+        }
     }
+    while (maxSlot->hitCount);
 }
 
 # else

@@ -15,7 +15,7 @@
 typedef struct OpInfo
 {
     IM3OpInfo   info;
-    u8          opcode;
+    m3opcode_t  opcode;
 }
 OpInfo;
 
@@ -41,7 +41,7 @@ void  m3_PrintRuntimeInfo  (IM3Runtime i_runtime)
 {
     printf ("\n-- m3 runtime -------------------------------------------------\n");
 
-    printf (" stack-size: %zu   \n\n", i_runtime->numStackSlots * sizeof (m3reg_t));
+    printf (" stack-size: %zu   \n\n", i_runtime->numStackSlots * sizeof (m3slot_t));
 
     u32 moduleIndex = 0;
     ForEachModule (i_runtime, (ModuleVisitor) v_PrintEnvModuleInfo, & moduleIndex);
@@ -59,9 +59,11 @@ cstr_t  GetTypeName  (u8 i_m3Type)
 }
 
 
-void  PrintFuncTypeSignature  (IM3FuncType i_funcType)
+cstr_t  SPrintFuncTypeSignature  (IM3FuncType i_funcType)
 {
-    printf ("(");
+    static char string [256];
+
+    sprintf (string, "(");
 
     u32 numArgs = i_funcType->numArgs;
     u8 * types = i_funcType->argTypes;
@@ -69,15 +71,19 @@ void  PrintFuncTypeSignature  (IM3FuncType i_funcType)
     for (u32 i = 0; i < numArgs; ++i)
     {
         if (i != 0)
-            printf (", ");
-        printf ("%s", GetTypeName (types [i]));
+            strcat (string, ", ");
+
+        strcat (string, GetTypeName (types [i]));
     }
 
-    printf (") -> %s", GetTypeName (i_funcType->returnType));
+    strcat (string, ") -> ");
+    strcat (string, GetTypeName (i_funcType->returnType));
+
+    return string;
 }
 
 
-size_t  SPrintArg  (char * o_string, size_t i_n, m3stack_t i_sp, u8 i_type)
+size_t  SPrintArg  (char * o_string, size_t i_n, u64 * i_sp, u8 i_type)
 {
     int len = 0;
 
@@ -92,7 +98,7 @@ size_t  SPrintArg  (char * o_string, size_t i_n, m3stack_t i_sp, u8 i_type)
     else if (i_type == c_m3Type_f64)
         len = snprintf (o_string, i_n, "%lf", * (f64 *) i_sp);
 
-    len = max (0, len);
+    len = m3_max (0, len);
 
     return len;
 }
@@ -105,7 +111,9 @@ cstr_t  SPrintFunctionArgList  (IM3Function i_function, m3stack_t i_sp)
     char * s = string;
     ccstr_t e = string + sizeof(string) - 1;
 
-    s += max (0, snprintf (s, e-s, "("));
+    s += m3_max (0, snprintf (s, e-s, "("));
+
+    u64 * argSp = (u64 *) i_sp;
 
     IM3FuncType funcType = i_function->funcType;
     if (funcType)
@@ -117,17 +125,17 @@ cstr_t  SPrintFunctionArgList  (IM3Function i_function, m3stack_t i_sp)
         {
             u8 type = types [i];
 
-            s += max (0, snprintf (s, e-s, "%s: ", c_waTypes [type]));
+            s += m3_max (0, snprintf (s, e-s, "%s: ", c_waTypes [type]));
 
-            s += SPrintArg (s, e-s, i_sp + i, type);
+            s += SPrintArg (s, e-s, argSp + i, type);
 
             if (i != numArgs - 1)
-                s += max (0, snprintf (s, e-s, ", "));
+                s += m3_max (0, snprintf (s, e-s, ", "));
         }
     }
     else printf ("null signature");
 
-    s += max (0, snprintf (s, e-s, ")"));
+    s += m3_max (0, snprintf (s, e-s, ")"));
 
     return string;
 }
@@ -135,12 +143,14 @@ cstr_t  SPrintFunctionArgList  (IM3Function i_function, m3stack_t i_sp)
 static
 OpInfo find_operation_info  (IM3Operation i_operation)
 {
-    OpInfo opInfo;
-    M3_INIT(opInfo);
+    OpInfo opInfo = { NULL, 0 };
 
+    if (!i_operation) return opInfo;
+
+    // TODO: find also extended opcodes
     for (u32 i = 0; i <= 0xff; ++i)
     {
-        IM3OpInfo oi = & c_operations [i];
+        IM3OpInfo oi = GetOpInfo(i);
 
         if (oi->type != c_m3Type_void)
         {
@@ -243,13 +253,18 @@ void  DecodeOperation  (char * o_string, u8 i_opcode, IM3Operation i_operation, 
 
     switch (i_opcode)
     {
-        d_m3Decode (0xc0,                  Const)
-        d_m3Decode (0xc1,                  Entry)
+//        d_m3Decode (0xc0,                  Const)
+//        d_m3Decode (0xc1,                  Entry)
         d_m3Decode (c_waOp_call,           Call)
         d_m3Decode (c_waOp_branch,         Branch)
         d_m3Decode (c_waOp_branchTable,    BranchTable)
         d_m3Decode (0x39,                  f64_Store)
     }
+
+    #undef d_m3Decode
+    #define d_m3Decode(FUNC) if (i_operation == op_##FUNC) Decode_##FUNC (o_string, i_opcode, i_operation, i_opInfo, o_pc);
+
+    d_m3Decode (Entry)
 }
 
 
@@ -300,7 +315,9 @@ void  dump_type_stack  (IM3Compilation o)
      applied until this compilation stage is finished
      -- constants are not statically represented in the type stack (like args & constants) since they don't have/need
      write counts
+
      -- the number shown for static args and locals (value in wasmStack [i]) represents the write count for the variable
+
      -- (does Wasm ever write to an arg? I dunno/don't remember.)
      -- the number for the dynamic stack values represents the slot number.
      -- if the slot index points to arg, local or constant it's denoted with a lowercase 'a', 'l' or 'c'
@@ -314,47 +331,32 @@ void  dump_type_stack  (IM3Compilation o)
     printf ("                                                        ");
     printf ("%s %s    ", regAllocated [0] ? "(r0)" : "    ", regAllocated [1] ? "(fp0)" : "     ");
 
-    u32 numArgs = GetFunctionNumArgs (o->function);
-
-    for (u32 i = 0; i < o->stackIndex; ++i)
+    for (u32 i = o->firstDynamicStackIndex; i < o->stackIndex; ++i)
     {
-        if (i == o->firstConstSlotIndex)
-            printf (" | ");                     // divide the static & dynamic portion of the stack
-
-        //        printf (" %d:%s.", i, c_waTypes [o->typeStack [i]]);
         printf (" %s", c_waCompactTypes [o->typeStack [i]]);
-        if (i < o->firstConstSlotIndex)
-        {
-            u16 writeCount = o->wasmStack [i];
 
-            printf ((i < numArgs) ? "A" : "L");     // arg / local
-            printf ("%d", (i32) writeCount);        // writeCount
+        u16 slot = o->wasmStack [i];
+
+        if (IsRegisterLocation (slot))
+        {
+            bool isFp = IsFpRegisterLocation (slot);
+            printf ("%s", isFp ? "f0" : "r0");
+
+            regAllocated [isFp]--;
         }
         else
         {
-            u16 slot = o->wasmStack [i];
-
-            if (IsRegisterLocation (slot))
+            if (slot < o->firstDynamicSlotIndex)
             {
-                bool isFp = IsFpRegisterLocation (slot);
-                printf ("%s", isFp ? "f0" : "r0");
-
-                regAllocated [isFp]--;
+                if (slot >= o->firstConstSlotIndex)
+                    printf ("c");
+                else if (slot >= o->function->numArgSlots)
+                    printf ("L");
+                else
+                    printf ("a");
             }
-            else
-            {
-                if (slot < o->firstSlotIndex)
-                {
-                    if (slot >= o->firstConstSlotIndex)
-                        printf ("c");
-                    else if (slot >= numArgs)
-                        printf ("l");
-                    else
-                        printf ("a");
-                }
 
-                printf ("%d", (i32) slot);  // slot
-            }
+            printf ("%d", (i32) slot);  // slot
         }
 
         printf (" ");
@@ -362,7 +364,6 @@ void  dump_type_stack  (IM3Compilation o)
 
     for (u32 r = 0; r < 2; ++r)
         d_m3Assert (regAllocated [r] == 0);         // reg allocation & stack out of sync
-
 }
 
 

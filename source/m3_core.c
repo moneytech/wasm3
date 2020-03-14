@@ -6,7 +6,7 @@
 //
 
 #define M3_IMPLEMENT_ERROR_STRINGS
-#include "m3.h"
+#include "wasm3.h"
 
 #include "m3_core.h"
 
@@ -22,8 +22,9 @@ void m3NotImplemented() {
 }
 
 M3_WEAK
-void m3Yield ()
+M3Result m3_Yield ()
 {
+    return m3Err_none;
 }
 
 #if d_m3FixedHeap
@@ -39,7 +40,7 @@ static u8* fixedHeapLast = NULL;
 #   define HEAP_ALIGN_PTR(P)
 #endif
 
-M3Result  m3Malloc  (void ** o_ptr, size_t i_size)
+M3Result  m3_Malloc  (void ** o_ptr, size_t i_size)
 {
     u8 * ptr = fixedHeapPtr;
 
@@ -62,96 +63,104 @@ M3Result  m3Malloc  (void ** o_ptr, size_t i_size)
     return m3Err_none;
 }
 
-void        m3Free_impl             (void * o_ptr)
+void  m3_Free  (void ** io_ptr)
 {
-    if (!o_ptr) return;
+    if (!io_ptr) return;
 
     // Handle the last chunk
-    if (o_ptr == fixedHeapLast) {
+    if (io_ptr == fixedHeapLast) {
         fixedHeapPtr = fixedHeapLast;
         fixedHeapLast = NULL;
-        //printf("== free %p\n", o_ptr);
+        //printf("== free %p\n", io_ptr);
     } else {
-        //printf("== free %p [failed]\n", o_ptr);
+        //printf("== free %p [failed]\n", io_ptr);
     }
+
+    * io_ptr = NULL;
 }
 
-void *  m3Realloc  (void * i_ptr, size_t i_newSize, size_t i_oldSize)
+M3Result  m3_Realloc  (void ** io_ptr, size_t i_newSize, size_t i_oldSize)
 {
-    //printf("== realloc %p => %d\n", i_ptr, i_newSize);
+    //printf("== realloc %p => %d\n", io_ptr, i_newSize);
 
-    void * ptr = i_ptr;
-    if (i_newSize == i_oldSize) return ptr;
+    void * ptr = *io_ptr;
+    if (i_newSize == i_oldSize) return m3Err_none;
 
     // Handle the last chunk
-    if (i_ptr && i_ptr == fixedHeapLast) {
+    if (ptr && ptr == fixedHeapLast) {
         fixedHeapPtr = fixedHeapLast + i_newSize;
         HEAP_ALIGN_PTR(fixedHeapPtr);
-        return ptr;
+        return m3Err_none;
     }
 
-    m3Malloc(&ptr, i_newSize);
-    if (!ptr) return NULL;
+    M3Result result = m3_Malloc(&ptr, i_newSize);
+    if (result) return result;
 
-    if (i_ptr) {
-        memcpy(ptr, i_ptr, i_oldSize);
+    if (*io_ptr) {
+        memcpy(ptr, *io_ptr, i_oldSize);
     }
 
-    return ptr;
+    *io_ptr = ptr;
+    return m3Err_none;
 }
-
 
 #else
 
-M3Result  m3Malloc  (void ** o_ptr, size_t i_size)
+M3Result  m3_Malloc  (void ** o_ptr, size_t i_size)
 {
     M3Result result = m3Err_none;
 
-    void * ptr = malloc (i_size);
-    if (ptr)
-    {
-        memset (ptr, 0x0, i_size);
-    }
-    else result = m3Err_mallocFailed;
+    void * ptr = calloc (i_size, 1);
+
+    if (not ptr)
+        result = m3Err_mallocFailed;
 
     * o_ptr = ptr;
-    //printf("== alloc %d => %p\n", i_size, ptr);
+//    printf("== alloc %d => %p\n", (u32) i_size, ptr);
 
     return result;
 }
 
-void  m3Free_impl  (void * o_ptr)
+void  m3_Free  (void ** io_ptr)
 {
-    if (!o_ptr) return;
-
-    //printf("== free %p\n", o_ptr);
-    free(o_ptr);
+//    if (i_ptr) printf("== free %p\n", i_ptr);
+    free (* io_ptr);
+    * io_ptr = NULL;
 }
 
-void *  m3Realloc  (void * i_ptr, size_t i_newSize, size_t i_oldSize)
+M3Result  m3_Realloc  (void ** io_ptr, size_t i_newSize, size_t i_oldSize)
 {
-    //printf("== realloc %p => %d\n", i_ptr, i_newSize);
-    void * ptr = i_ptr;
+    M3Result result = m3Err_none;
 
     if (i_newSize != i_oldSize)
     {
-        ptr = realloc (i_ptr, i_newSize);
+        void * newPtr = realloc (* io_ptr, i_newSize);
 
-        if (ptr)
+        if (newPtr)
         {
-            if (i_ptr)
-            {
-                if (i_newSize > i_oldSize)
-                    memset ((u8*) ptr + i_oldSize, 0x0, i_newSize - i_oldSize);
-            }
-            else memset (ptr, 0x0, i_newSize);
+            if (i_newSize > i_oldSize)
+                memset ((u8 *) newPtr + i_oldSize, 0x0, i_newSize - i_oldSize);
+
+            * io_ptr = newPtr;
         }
+        else result = m3Err_mallocFailed;
+
+//        printf("== realloc %p -> %p => %d\n", i_ptr, ptr, (u32) i_newSize);
     }
 
-    return ptr;
+    return result;
 }
 
 #endif
+
+M3Result  m3_CopyMem  (void ** o_to, const void * i_from, size_t i_size)
+{
+    M3Result result = m3_Malloc(o_to, i_size);
+    if (!result) {
+        memcpy (*o_to, i_from, i_size);
+    }
+    return result;
+}
 
 //--------------------------------------------------------------------------------------------
 
@@ -172,7 +181,7 @@ void        m3StackCheck ()
     size_t addr = (size_t)&stack;
 
     size_t stackEnd = stack_end;
-    stack_end = min(stack_end, addr);
+    stack_end = m3_min (stack_end, addr);
 
 //    if (stackEnd != stack_end)
 //        printf ("maxStack: %ld\n", m3StackGetMax ());
@@ -337,7 +346,7 @@ M3Result  ReadLebUnsigned  (u64 * o_value, u32 i_maxNumBits, bytes_t * io_bytes,
             break;
         }
 
-        if (shift > i_maxNumBits)
+        if (shift >= i_maxNumBits)
         {
             result = m3Err_lebOverflow;
             break;
@@ -373,15 +382,14 @@ M3Result  ReadLebSigned  (i64 * o_value, u32 i_maxNumBits, bytes_t * io_bytes, c
 
             if ((byte & 0x40) and (shift < 64))    // do sign extension
             {
-                u64 extend = 1;
-                extend <<= shift;
-                value |= -extend;
+                u64 extend = 0;
+                value |= (~extend << shift);
             }
 
             break;
         }
 
-        if (shift > i_maxNumBits)
+        if (shift >= i_maxNumBits)
         {
             result = m3Err_lebOverflow;
             break;
@@ -462,7 +470,7 @@ M3Result  Read_utf8  (cstr_t * o_utf8, bytes_t * io_bytes, cbytes_t i_end)
             if (end <= i_end)
             {
                 char * utf8;
-                result = m3Malloc ((void **) & utf8, utf8Length + 1);
+                result = m3_Malloc ((void **) & utf8, utf8Length + 1);
 
                 if (not result)
                 {
